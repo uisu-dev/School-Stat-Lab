@@ -19,23 +19,33 @@ export function ResponseForm({ slug }: { slug: string }) {
     const supabase = getSupabaseBrowserClient();
 
     if (supabase) {
-      const { data: response } = await supabase
-        .from("responses")
-        .insert({
-          survey_id: demoSurvey.id,
-          respondent_key: typeof answers.respondent_key === "string" ? answers.respondent_key : null,
-        })
-        .select("id")
-        .single();
+      const responseId = crypto.randomUUID();
+      const { error: responseError } = await supabase.from("responses").insert({
+        id: responseId,
+        survey_id: demoSurvey.id,
+        respondent_key: typeof answers.respondent_key === "string" ? answers.respondent_key : null,
+      });
 
-      if (response) {
-        await supabase.from("answers").insert(
+      if (!responseError) {
+        const { error: answerError } = await supabase.from("answers").insert(
           demoSurvey.questions.map((question) => ({
-            response_id: response.id,
+            response_id: responseId,
             survey_id: demoSurvey.id,
             question_id: question.id,
             value: answers[question.id] ?? null,
           })),
+        );
+
+        if (answerError) {
+          window.localStorage.setItem(
+            `school-stat-lab:${slug}:${Date.now()}`,
+            JSON.stringify({ answers, submittedAt: new Date().toISOString(), error: answerError.message }),
+          );
+        }
+      } else {
+        window.localStorage.setItem(
+          `school-stat-lab:${slug}:${Date.now()}`,
+          JSON.stringify({ answers, submittedAt: new Date().toISOString(), error: responseError.message }),
         );
       }
     } else {
