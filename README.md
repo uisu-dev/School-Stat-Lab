@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# School Stat Lab
+
+교사가 설문을 만들고 학생 응답을 모은 뒤 t검정, ANOVA, 카이제곱 검정 같은 기본 통계 분석과 쉬운 해석을 한 번에 확인하는 풀스택 MVP입니다.
+
+## 현재 포함된 기능
+
+- 분석 목적 기반 설문 설계 화면
+- 학생 응답용 링크 화면: `/respond/lesson-confidence`
+- 데모 응답 데이터 기반 자동 분석
+- 기술통계, 빈도분석, 자료 품질/가정 점검
+- Cronbach's alpha 기반 척도 신뢰도
+- 상관분석과 단순회귀
+- 대응표본 t검정, Welch 독립표본 t검정, 일원분산분석, Tukey-Kramer 사후비교, 카이제곱 독립성 검정
+- 교사용 해석, 수업용 설명, 보고서 문장 템플릿
+- Supabase SSR/browser client 설정
+- Supabase migration: `GRANT`, RLS, 교사/익명 응답 정책 포함
 
 ## Getting Started
 
-First, run the development server:
+개발 서버를 실행합니다.
 
-```bash
+```powershell
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+브라우저에서 [http://localhost:3000](http://localhost:3000)을 엽니다.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Supabase 연결
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`.env.example`을 참고해 `.env.local`을 만들고 값을 채웁니다.
 
-## Learn More
+```powershell
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+```
 
-To learn more about Next.js, take a look at the following resources:
+마이그레이션은 Supabase CLI로 적용합니다.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```powershell
+npx supabase link --project-ref <project-ref>
+npx supabase db push
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Supabase의 2026년 Data API 변경에 맞춰 migration 안에 명시적 `GRANT`가 들어 있습니다. 새 테이블은 RLS 정책뿐 아니라 역할별 권한 부여도 함께 검토해야 합니다.
 
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+GitHub 저장소에 푸시한 뒤 Vercel에서 프로젝트를 import하고 아래 환경변수를 등록합니다.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
