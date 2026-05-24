@@ -1,358 +1,455 @@
 "use client";
 
-import { buildDemoFindings, groupNumericAnswers, numericAnswers } from "@/lib/analysis";
+import { buildDemoFindings } from "@/lib/analysis";
 import { demoResponses, demoSurvey } from "@/lib/demo-data";
-import type { AnalysisFinding, SurveyPurpose } from "@/lib/types";
+import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import {
+  createBlankQuestion,
+  createEditToken,
+  createEditableSurvey,
+  loadDraft,
+  loadSummaries,
+  saveDraft,
+  saveSummaries,
+  sha256,
+  slugify,
+  surveyFromRows,
+  updateQuestionForKind,
+  type EditableSurvey,
+  type QuestionRow,
+  type SavedSurveySummary,
+  type SurveyRow,
+} from "@/lib/survey-persistence";
+import type { AnalysisFinding, QuestionKind, SurveyQuestion } from "@/lib/types";
 import {
   BarChart3,
-  BookOpenCheck,
   Check,
-  ClipboardList,
-  Download,
+  ChevronRight,
+  Copy,
   ExternalLink,
   FileText,
-  FlaskConical,
-  GitBranch,
-  GraduationCap,
   Link2,
+  Loader2,
   Plus,
-  QrCode,
-  Send,
-  Settings2,
-  ShieldCheck,
+  Save,
   Sigma,
-  Sparkles,
-  Superscript,
-  Table2,
-  Users,
+  Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-const purposeOptions: Array<{
-  id: SurveyPurpose;
-  label: string;
-  helper: string;
-}> = [
-  {
-    id: "pre_post",
-    label: "수업 전후 변화",
-    helper: "대응표본 t검정",
-  },
-  {
-    id: "two_group",
-    label: "두 집단 비교",
-    helper: "독립표본 t검정",
-  },
-  {
-    id: "multi_group",
-    label: "세 집단 이상",
-    helper: "ANOVA",
-  },
-  {
-    id: "category_relationship",
-    label: "범주 관계",
-    helper: "카이제곱 검정",
-  },
-  {
-    id: "satisfaction",
-    label: "만족도 요약",
-    helper: "기술통계",
-  },
-  {
-    id: "scale_reliability",
-    label: "척도 신뢰도",
-    helper: "Cronbach alpha",
-  },
-  {
-    id: "relationship_prediction",
-    label: "관계와 예측",
-    helper: "상관/회귀",
-  },
+const questionKindOptions: Array<{ value: QuestionKind; label: string }> = [
+  { value: "likert", label: "5점 척도" },
+  { value: "single_choice", label: "객관식" },
+  { value: "short_text", label: "단답형" },
+  { value: "long_text", label: "서술형" },
+  { value: "number", label: "숫자" },
 ];
 
-const questionKindLabels = {
-  single_choice: "단일 선택",
-  multi_choice: "복수 선택",
-  likert: "리커트",
-  number: "숫자",
-  short_text: "단답형",
-  long_text: "서술형",
-  matrix_likert: "행렬 척도",
-};
-
-const analysisRoleLabels = {
-  group: "집단 구분",
-  pre_measure: "사전 측정",
-  post_measure: "사후 측정",
-  outcome: "결과 변수",
-  scale_item: "척도 문항",
-  predictor: "예측 변수",
-  category: "범주 변수",
-  note: "서술 응답",
-};
-
 export default function Home() {
-  const [selectedPurpose, setSelectedPurpose] = useState<SurveyPurpose>("pre_post");
-  const [selectedFinding, setSelectedFinding] = useState(0);
   const findings = useMemo(() => buildDemoFindings(demoResponses), []);
+  const [survey, setSurvey] = useState<EditableSurvey>(() => createEditableSurvey(demoSurvey));
+  const [savedSurveys, setSavedSurveys] = useState<SavedSurveySummary[]>([]);
+  const [selectedFinding, setSelectedFinding] = useState(0);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveMessage, setSaveMessage] = useState("저장 준비 완료");
+
+  const responseUrl = `/respond/${survey.slug}`;
   const currentFinding = findings[selectedFinding];
-  const preValues = numericAnswers(demoResponses, "pre_confidence");
-  const postValues = numericAnswers(demoResponses, "post_confidence");
-  const satisfactionByClass = groupNumericAnswers(demoResponses, "class_group", "satisfaction");
-  const responseUrl = "/respond/lesson-confidence";
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setSavedSurveys(loadSummaries());
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function updateSurveyTitle(title: string) {
+    setSurvey((current) => ({
+      ...current,
+      title,
+      slug: slugify(title, current.id),
+    }));
+    setSaveState("idle");
+  }
+
+  function updateQuestion(id: string, patch: Partial<SurveyQuestion>) {
+    setSurvey((current) => ({
+      ...current,
+      questions: current.questions.map((question) =>
+        question.id === id ? { ...question, ...patch } : question,
+      ),
+    }));
+    setSaveState("idle");
+  }
+
+  function changeQuestionKind(id: string, kind: QuestionKind) {
+    setSurvey((current) => ({
+      ...current,
+      questions: current.questions.map((question) =>
+        question.id === id ? updateQuestionForKind(question, kind) : question,
+      ),
+    }));
+    setSaveState("idle");
+  }
+
+  function addQuestion() {
+    setSurvey((current) => ({
+      ...current,
+      questions: [...current.questions, createBlankQuestion(current.questions.length + 1)],
+    }));
+    setSaveState("idle");
+  }
+
+  function removeQuestion(id: string) {
+    setSurvey((current) => ({
+      ...current,
+      questions:
+        current.questions.length === 1
+          ? current.questions
+          : current.questions.filter((question) => question.id !== id),
+    }));
+    setSaveState("idle");
+  }
+
+  function createNewSurvey() {
+    const id = crypto.randomUUID();
+    const title = "새 설문지";
+    setSurvey({
+      id,
+      title,
+      description: "",
+      slug: slugify(title, id),
+      editToken: createEditToken(),
+      questions: [createBlankQuestion(1)],
+    });
+    setSaveState("idle");
+    setSaveMessage("새 설문지를 작성 중입니다");
+  }
+
+  async function loadSavedSurvey(summary: SavedSurveySummary) {
+    const localDraft = loadDraft(summary.id);
+    if (localDraft) {
+      setSurvey(localDraft);
+      setSaveState("saved");
+      setSaveMessage("저장된 설문지를 불러왔습니다");
+    }
+
+    const supabase = getSupabaseBrowserClient(summary.editToken);
+    if (!supabase) return;
+
+    const { data: rawSurveyRow } = await supabase
+      .from("surveys")
+      .select("id,title,description,slug")
+      .eq("id", summary.id)
+      .single();
+
+    const { data: rawQuestionRows } = await supabase
+      .from("questions")
+      .select("id,position,prompt,kind,required,options,scale,analysis_role")
+      .eq("survey_id", summary.id)
+      .order("position", { ascending: true });
+
+    const surveyRow = rawSurveyRow as SurveyRow | null;
+    const questionRows = rawQuestionRows as QuestionRow[] | null;
+    if (surveyRow && questionRows) {
+      const loaded = surveyFromRows(surveyRow, questionRows, summary.editToken);
+      setSurvey(loaded);
+      saveDraft(loaded);
+    }
+  }
+
+  async function saveSurvey() {
+    setSaveState("saving");
+    setSaveMessage("저장 중입니다");
+
+    const normalized: EditableSurvey = {
+      ...survey,
+      title: survey.title.trim() || "제목 없는 설문지",
+      description: survey.description.trim(),
+      slug: survey.slug || slugify(survey.title, survey.id),
+      editToken: survey.editToken || createEditToken(),
+      questions: survey.questions.map((question, index) => ({
+        ...question,
+        id: question.id || `q_${index + 1}`,
+        prompt: question.prompt.trim() || `질문 ${index + 1}`,
+      })),
+    };
+    const supabase = getSupabaseBrowserClient(normalized.editToken);
+
+    try {
+      if (supabase) {
+        const editTokenHash = await sha256(normalized.editToken);
+        const { error: surveyError } = await supabase.from("surveys").upsert(
+          {
+            id: normalized.id,
+            owner_id: null,
+            title: normalized.title,
+            purpose: "satisfaction",
+            description: normalized.description,
+            slug: normalized.slug,
+            status: "published",
+            is_anonymous: true,
+            settings: { editor: "simple", updatedAt: new Date().toISOString() },
+            edit_token_hash: editTokenHash,
+            published_at: new Date().toISOString(),
+          },
+          { onConflict: "id" },
+        );
+
+        if (surveyError) throw surveyError;
+
+        const { error: deleteError } = await supabase
+          .from("questions")
+          .delete()
+          .eq("survey_id", normalized.id);
+
+        if (deleteError) throw deleteError;
+
+        const { error: questionError } = await supabase.from("questions").insert(
+          normalized.questions.map((question, index) => ({
+            survey_id: normalized.id,
+            id: question.id,
+            position: index + 1,
+            prompt: question.prompt,
+            kind: question.kind,
+            required: question.required,
+            options: question.options ?? [],
+            scale: question.scale ?? null,
+            analysis_role: question.analysisRole ?? null,
+          })),
+        );
+
+        if (questionError) throw questionError;
+      }
+
+      saveDraft(normalized);
+      const summary: SavedSurveySummary = {
+        id: normalized.id,
+        title: normalized.title,
+        slug: normalized.slug,
+        editToken: normalized.editToken,
+        updatedAt: new Date().toISOString(),
+        questionCount: normalized.questions.length,
+      };
+      const nextSummaries = [
+        summary,
+        ...savedSurveys.filter((item) => item.id !== normalized.id),
+      ].slice(0, 12);
+
+      setSurvey(normalized);
+      setSavedSurveys(nextSummaries);
+      saveSummaries(nextSummaries);
+      setSaveState("saved");
+      setSaveMessage("저장되었습니다");
+    } catch (error) {
+      console.error(error);
+      saveDraft(normalized);
+      setSaveState("error");
+      setSaveMessage("브라우저에는 저장됐지만 Supabase 저장을 확인하지 못했습니다");
+    }
+  }
 
   return (
-    <main className="min-h-dvh bg-[#f4f6f8] text-slate-950">
-      <div className="grid min-h-dvh lg:grid-cols-[248px_1fr]">
-        <aside className="border-b border-slate-200 bg-white px-4 py-4 lg:border-b-0 lg:border-r">
+    <main className="min-h-dvh bg-[#f7f8fa] text-slate-950">
+      <div className="mx-auto grid min-h-dvh max-w-[1480px] gap-6 px-4 py-5 lg:grid-cols-[240px_1fr] lg:px-6">
+        <aside className="hidden rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] lg:block">
           <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-slate-950 text-white">
+            <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-950 text-white">
               <Sigma className="size-5" aria-hidden />
             </div>
             <div>
-              <p className="text-sm font-semibold">School Stat Lab</p>
-              <p className="text-xs text-slate-500">교사용 통계 설문 도구</p>
+              <p className="text-base font-bold">School Stat Lab</p>
+              <p className="text-xs text-slate-500">설문과 통계 분석</p>
             </div>
           </div>
 
-          <nav className="mt-6 grid gap-1 text-sm">
+          <nav className="mt-8 grid gap-2">
             {[
-              ["설문 설계", ClipboardList],
-              ["응답 수집", Send],
+              ["설문 만들기", FileText],
+              ["응답 링크", Link2],
               ["자동 분석", BarChart3],
-              ["수업 설명", GraduationCap],
-              ["보고서", FileText],
             ].map(([label, Icon]) => (
               <button
-                className="flex h-10 items-center gap-3 rounded-md px-3 text-left font-medium text-slate-700 transition hover:bg-slate-100"
+                className="flex h-11 items-center gap-3 rounded-2xl px-3 text-left text-sm font-bold text-slate-700 transition hover:bg-slate-50"
                 key={label as string}
                 type="button"
               >
-                <Icon className="size-4 text-slate-500" aria-hidden />
+                <Icon className="size-4 text-slate-400" aria-hidden />
                 {label as string}
               </button>
             ))}
           </nav>
-
-          <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
-              <ShieldCheck className="size-4" aria-hidden />
-              익명 우선 설계
-            </div>
-            <p className="mt-2 text-xs leading-5 text-emerald-800">
-              학생 이름 대신 연결 코드로 사전/사후 응답을 묶고, 개인정보 수집을 기본적으로 줄입니다.
-            </p>
-          </div>
         </aside>
 
-        <section className="min-w-0">
-          <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-8">
+        <section className="grid content-start gap-6">
+          <header className="flex flex-col gap-4 rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase text-teal-700">MVP Workspace</p>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-                설문 제작부터 통계 해석까지 한 화면에서
-              </h1>
+              <p className="text-xs font-bold uppercase text-blue-600">Survey Builder</p>
+              <h1 className="mt-1 text-3xl font-black tracking-tight">설문지를 만들고 저장하세요</h1>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
-                className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium transition hover:bg-slate-50"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
+                onClick={createNewSurvey}
                 type="button"
               >
-                <GitBranch className="size-4" aria-hidden />
-                GitHub 준비
+                <Plus className="size-4" aria-hidden />
+                새 설문
               </button>
               <button
-                className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium transition hover:bg-slate-50"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 disabled:bg-blue-300"
+                disabled={saveState === "saving"}
+                onClick={saveSurvey}
                 type="button"
               >
-                <Download className="size-4" aria-hidden />
-                보고서 내보내기
+                {saveState === "saving" ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Save className="size-4" aria-hidden />
+                )}
+                저장
               </button>
               <a
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800"
                 href={responseUrl}
               >
                 <ExternalLink className="size-4" aria-hidden />
-                학생 화면 열기
+                응답 화면
               </a>
             </div>
           </header>
 
-          <div className="grid gap-5 px-5 py-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] lg:px-8">
-            <section className="grid gap-5">
-              <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 text-sm font-semibold text-teal-700">
-                      <Sparkles className="size-4" aria-hidden />
-                      분석 목적 기반 설문 생성
-                    </div>
-                    <h2 className="mt-2 text-xl font-semibold">{demoSurvey.title}</h2>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                      선생님이 목적만 고르면 필요한 문항 역할과 분석 방법이 같이 설계됩니다.
-                    </p>
-                  </div>
-                  <button
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-teal-700 px-3 text-sm font-semibold text-white transition hover:bg-teal-800"
-                    type="button"
-                  >
-                    <Plus className="size-4" aria-hidden />
-                    문항 추가
-                  </button>
-                </div>
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_420px]">
+            <section className="grid gap-6">
+              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] sm:p-7">
+                <div className="grid gap-5">
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-slate-500">설문 제목</span>
+                    <input
+                      className="h-14 rounded-3xl border border-transparent bg-slate-50 px-5 text-xl font-black outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                      value={survey.title}
+                      onChange={(event) => updateSurveyTitle(event.target.value)}
+                    />
+                  </label>
 
-                <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  {purposeOptions.map((option) => (
-                    <button
-                      className={`rounded-lg border p-3 text-left transition ${
-                        selectedPurpose === option.id
-                          ? "border-teal-600 bg-teal-50 text-teal-950"
-                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                      }`}
-                      key={option.id}
-                      onClick={() => setSelectedPurpose(option.id)}
-                      type="button"
-                    >
-                      <span className="block text-sm font-semibold">{option.label}</span>
-                      <span className="mt-1 block text-xs text-slate-500">{option.helper}</span>
-                    </button>
-                  ))}
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-slate-500">설명</span>
+                    <textarea
+                      className="min-h-24 rounded-3xl border border-transparent bg-slate-50 px-5 py-4 text-sm leading-6 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                      value={survey.description}
+                      onChange={(event) => {
+                        setSurvey((current) => ({ ...current, description: event.target.value }));
+                        setSaveState("idle");
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold">문항 구조</h2>
-                    <p className="mt-1 text-sm text-slate-600">
-                      각 문항은 응답 형식과 분석 역할을 함께 가집니다.
-                    </p>
-                  </div>
-                  <Settings2 className="size-5 text-slate-400" aria-hidden />
-                </div>
-
-                <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
-                  <table className="w-full min-w-[680px] border-collapse text-sm">
-                    <thead className="bg-slate-50 text-left text-xs font-semibold uppercase text-slate-500">
-                      <tr>
-                        <th className="px-4 py-3">문항</th>
-                        <th className="px-4 py-3">형식</th>
-                        <th className="px-4 py-3">분석 역할</th>
-                        <th className="px-4 py-3">필수</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {demoSurvey.questions.map((question) => (
-                        <tr key={question.id}>
-                          <td className="px-4 py-3 font-medium text-slate-900">{question.prompt}</td>
-                          <td className="px-4 py-3 text-slate-600">
-                            {questionKindLabels[question.kind]}
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
-                              {question.analysisRole
-                                ? analysisRoleLabels[question.analysisRole]
-                                : "없음"}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            {question.required ? (
-                              <Check className="size-4 text-teal-700" aria-label="필수" />
-                            ) : (
-                              <span className="text-slate-400">선택</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              <div className="grid gap-4">
+                {survey.questions.map((question, index) => (
+                  <QuestionEditor
+                    index={index}
+                    key={question.id}
+                    onChange={updateQuestion}
+                    onKindChange={changeQuestionKind}
+                    onRemove={removeQuestion}
+                    question={question}
+                  />
+                ))}
               </div>
 
-              <div className="grid gap-5 md:grid-cols-2">
-                <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center gap-2">
-                    <Link2 className="size-4 text-teal-700" aria-hidden />
-                    <h2 className="text-lg font-semibold">응답 링크</h2>
-                  </div>
-                  <div className="mt-4 flex items-center gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
-                    <code className="min-w-0 flex-1 truncate text-sm text-slate-700">
-                      {responseUrl}
-                    </code>
-                    <button
-                      className="inline-flex size-9 items-center justify-center rounded-md border border-slate-300 bg-white transition hover:bg-slate-100"
-                      title="링크 복사"
-                      type="button"
-                    >
-                      <Link2 className="size-4" aria-hidden />
-                    </button>
-                  </div>
-                  <p className="mt-3 text-sm leading-6 text-slate-600">
-                    링크를 배포하면 학생 응답 화면으로 이동합니다. Supabase 환경변수가 있으면 DB에 저장되고,
-                    없으면 브라우저 로컬에 임시 저장됩니다.
-                  </p>
-                </div>
-
-                <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center gap-2">
-                    <QrCode className="size-4 text-teal-700" aria-hidden />
-                    <h2 className="text-lg font-semibold">QR 배포</h2>
-                  </div>
-                  <div className="mt-4 grid grid-cols-[104px_1fr] gap-4">
-                    <div className="grid size-[104px] grid-cols-5 gap-1 rounded-md border border-slate-200 bg-white p-2">
-                      {Array.from({ length: 25 }, (_, index) => (
-                        <span
-                          className={`rounded-[2px] ${
-                            [0, 1, 2, 5, 10, 12, 14, 18, 20, 21, 22, 24].includes(index)
-                              ? "bg-slate-950"
-                              : "bg-slate-200"
-                          }`}
-                          key={index}
-                        />
-                      ))}
-                    </div>
-                    <p className="text-sm leading-6 text-slate-600">
-                      실제 배포 단계에서는 링크 기반 QR 이미지를 생성해 학급 화면에 바로 띄우도록 연결합니다.
-                    </p>
-                  </div>
-                </div>
-              </div>
+              <button
+                className="flex h-14 items-center justify-center gap-2 rounded-[24px] border border-dashed border-slate-300 bg-white text-sm font-bold text-slate-700 transition hover:border-blue-400 hover:text-blue-600"
+                onClick={addQuestion}
+                type="button"
+              >
+                <Plus className="size-4" aria-hidden />
+                질문 추가
+              </button>
             </section>
 
-            <section className="grid content-start gap-5">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Metric icon={Users} label="응답 수" value={`${demoResponses.length}명`} />
-                <Metric icon={Table2} label="문항 수" value={`${demoSurvey.questions.length}개`} />
-                <Metric icon={Superscript} label="추천 분석" value={`${findings.length}종`} />
+            <aside className="grid content-start gap-5">
+              <div className="grid grid-cols-3 gap-3">
+                <Metric label="응답" value={`${demoResponses.length}명`} />
+                <Metric label="질문" value={`${survey.questions.length}개`} />
+                <Metric label="분석" value={`${findings.length}종`} />
               </div>
 
-              <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center justify-between">
+              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
+                <div className="flex items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-lg font-semibold">자동 분석 결과</h2>
-                    <p className="mt-1 text-sm text-slate-600">
-                      응답 구조를 바탕으로 가능한 검정을 추천하고 해석합니다.
-                    </p>
+                    <h2 className="text-lg font-black">저장된 설문</h2>
+                    <p className="mt-1 text-xs font-semibold text-slate-400">{saveMessage}</p>
                   </div>
-                  <FlaskConical className="size-5 text-slate-400" aria-hidden />
+                  {saveState === "saved" ? <Check className="size-5 text-blue-600" aria-hidden /> : null}
                 </div>
 
                 <div className="mt-4 grid gap-2">
-                  {findings.map((finding, index) => (
+                  {savedSurveys.length === 0 ? (
+                    <div className="rounded-3xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+                      아직 저장된 설문이 없습니다.
+                    </div>
+                  ) : (
+                    savedSurveys.map((item) => (
+                      <button
+                        className="flex items-center justify-between gap-3 rounded-3xl bg-slate-50 p-4 text-left transition hover:bg-blue-50"
+                        key={item.id}
+                        onClick={() => loadSavedSurvey(item)}
+                        type="button"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-black">{item.title}</span>
+                          <span className="mt-1 block text-xs font-semibold text-slate-400">
+                            {item.questionCount}개 질문
+                          </span>
+                        </span>
+                        <ChevronRight className="size-4 shrink-0 text-slate-400" aria-hidden />
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
+                <h2 className="text-lg font-black">응답 링크</h2>
+                <div className="mt-4 flex items-center gap-2 rounded-3xl bg-slate-50 p-3">
+                  <code className="min-w-0 flex-1 truncate px-2 text-xs font-bold text-slate-600">
+                    {responseUrl}
+                  </code>
+                  <button
+                    className="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-500 shadow-sm transition hover:text-blue-600"
+                    onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${responseUrl}`)}
+                    title="링크 복사"
+                    type="button"
+                  >
+                    <Copy className="size-4" aria-hidden />
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
+                <h2 className="text-lg font-black">자동 분석</h2>
+                <div className="mt-4 grid gap-2">
+                  {findings.slice(0, 6).map((finding, index) => (
                     <button
-                      className={`rounded-lg border p-3 text-left transition ${
+                      className={`rounded-3xl p-4 text-left transition ${
                         selectedFinding === index
-                          ? "border-slate-950 bg-slate-950 text-white"
-                          : "border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+                          ? "bg-slate-950 text-white"
+                          : "bg-slate-50 text-slate-950 hover:bg-blue-50"
                       }`}
                       key={finding.method}
                       onClick={() => setSelectedFinding(index)}
                       type="button"
                     >
-                      <span className="block text-sm font-semibold">{finding.title}</span>
+                      <span className="block text-sm font-black">{finding.title}</span>
                       <span
-                        className={`mt-1 block text-xs ${
-                          selectedFinding === index ? "text-slate-300" : "text-slate-500"
+                        className={`mt-1 block text-xs font-semibold ${
+                          selectedFinding === index ? "text-slate-300" : "text-slate-400"
                         }`}
                       >
                         {finding.method}
@@ -362,33 +459,8 @@ export default function Home() {
                 </div>
               </div>
 
-              <FindingDetails finding={currentFinding} />
-
-              <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center gap-2">
-                  <BarChart3 className="size-4 text-teal-700" aria-hidden />
-                  <h2 className="text-lg font-semibold">빠른 시각화</h2>
-                </div>
-
-                <div className="mt-5 grid gap-5">
-                  <MiniBar label="사전 자신감" value={average(preValues)} max={5} />
-                  <MiniBar label="사후 자신감" value={average(postValues)} max={5} />
-                  {Object.entries(satisfactionByClass).map(([label, values]) => (
-                    <MiniBar key={label} label={`${label} 만족도`} value={average(values)} max={5} />
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-5">
-                <div className="flex items-center gap-2 text-sm font-semibold text-amber-950">
-                  <BookOpenCheck className="size-4" aria-hidden />
-                  수업용 설명 모드
-                </div>
-                <p className="mt-2 text-sm leading-6 text-amber-900">
-                  {currentFinding.classroomExplanation}
-                </p>
-              </div>
-            </section>
+              <FindingCard finding={currentFinding} />
+            </aside>
           </div>
         </section>
       </div>
@@ -396,85 +468,108 @@ export default function Home() {
   );
 }
 
-function Metric({
-  icon: Icon,
-  label,
-  value,
+function QuestionEditor({
+  index,
+  onChange,
+  onKindChange,
+  onRemove,
+  question,
 }: {
-  icon: typeof Users;
-  label: string;
-  value: string;
+  index: number;
+  onChange: (id: string, patch: Partial<SurveyQuestion>) => void;
+  onKindChange: (id: string, kind: QuestionKind) => void;
+  onRemove: (id: string) => void;
+  question: SurveyQuestion;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-500">{label}</span>
-        <Icon className="size-4 text-teal-700" aria-hidden />
-      </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
-    </div>
-  );
-}
-
-function FindingDetails({ finding }: { finding: AnalysisFinding }) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="text-lg font-semibold">{finding.title}</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-700">{finding.summary}</p>
-
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {Object.entries(finding.stats).map(([label, value]) => (
-          <div key={label} className="rounded-md border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">{label}</p>
-            <p className="mt-1 text-base font-semibold text-slate-950">{value}</p>
-          </div>
-        ))}
+    <section className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] sm:p-6">
+      <div className="flex items-start justify-between gap-4">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-sm font-black text-blue-600">
+          {index + 1}
+        </span>
+        <button
+          className="flex size-9 items-center justify-center rounded-2xl text-slate-400 transition hover:bg-red-50 hover:text-red-500"
+          onClick={() => onRemove(question.id)}
+          title="질문 삭제"
+          type="button"
+        >
+          <Trash2 className="size-4" aria-hidden />
+        </button>
       </div>
 
-      <div className="mt-5 grid gap-4">
-        <section>
-          <h3 className="text-sm font-semibold text-slate-900">교사용 해석</h3>
-          <p className="mt-1 text-sm leading-6 text-slate-600">{finding.teacherExplanation}</p>
-        </section>
-        <section>
-          <h3 className="text-sm font-semibold text-slate-900">보고서 문장</h3>
-          <p className="mt-1 rounded-md bg-slate-950 p-3 font-mono text-xs leading-5 text-white">
-            {finding.reportSentence}
-          </p>
-        </section>
-        <section>
-          <h3 className="text-sm font-semibold text-slate-900">주의 사항</h3>
-          <ul className="mt-2 grid gap-2">
-            {finding.assumptions.map((assumption) => (
-              <li className="flex gap-2 text-sm leading-5 text-slate-600" key={assumption}>
-                <span className="mt-1 size-1.5 rounded-full bg-teal-600" />
-                {assumption}
-              </li>
+      <div className="mt-4 grid gap-4">
+        <input
+          className="h-13 rounded-3xl border border-transparent bg-slate-50 px-5 text-base font-bold outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+          value={question.prompt}
+          onChange={(event) => onChange(question.id, { prompt: event.target.value })}
+        />
+
+        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+          <select
+            className="h-12 rounded-3xl border border-transparent bg-slate-50 px-4 text-sm font-bold outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+            value={question.kind}
+            onChange={(event) => onKindChange(question.id, event.target.value as QuestionKind)}
+          >
+            {questionKindOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
             ))}
-          </ul>
-        </section>
+          </select>
+
+          <label className="flex h-12 items-center gap-2 rounded-3xl bg-slate-50 px-4 text-sm font-bold text-slate-600">
+            <input
+              checked={question.required}
+              onChange={(event) => onChange(question.id, { required: event.target.checked })}
+              type="checkbox"
+            />
+            필수
+          </label>
+        </div>
+
+        {question.kind === "single_choice" ? (
+          <textarea
+            className="min-h-24 rounded-3xl border border-transparent bg-slate-50 px-5 py-4 text-sm leading-6 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+            value={(question.options ?? []).join("\n")}
+            onChange={(event) =>
+              onChange(question.id, {
+                options: event.target.value
+                  .split("\n")
+                  .map((option) => option.trim())
+                  .filter(Boolean),
+              })
+            }
+          />
+        ) : null}
       </div>
-    </div>
+    </section>
   );
 }
 
-function MiniBar({ label, value, max }: { label: string; value: number; max: number }) {
-  const width = `${Math.max(0, Math.min(100, (value / max) * 100))}%`;
-
+function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between text-sm">
-        <span className="font-medium text-slate-700">{label}</span>
-        <span className="font-mono text-slate-500">{value.toFixed(2)}</span>
-      </div>
-      <div className="h-3 rounded-full bg-slate-100">
-        <div className="h-3 rounded-full bg-teal-600" style={{ width }} />
-      </div>
+    <div className="rounded-[24px] bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
+      <p className="text-xs font-bold text-slate-400">{label}</p>
+      <p className="mt-2 text-2xl font-black">{value}</p>
     </div>
   );
 }
 
-function average(values: number[]) {
-  if (values.length === 0) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+function FindingCard({ finding }: { finding: AnalysisFinding }) {
+  return (
+    <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
+      <h2 className="text-lg font-black">{finding.title}</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-500">{finding.summary}</p>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        {Object.entries(finding.stats)
+          .slice(0, 6)
+          .map(([label, value]) => (
+            <div className="rounded-2xl bg-slate-50 p-3" key={label}>
+              <p className="text-[11px] font-bold text-slate-400">{label}</p>
+              <p className="mt-1 text-sm font-black">{value}</p>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
 }
