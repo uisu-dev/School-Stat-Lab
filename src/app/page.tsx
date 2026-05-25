@@ -1,60 +1,54 @@
 "use client";
 
-import { buildDemoFindings } from "@/lib/analysis";
-import { demoResponses, demoSurvey } from "@/lib/demo-data";
+import Image from "next/image";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import {
+  createBlankChapter,
   createBlankQuestion,
-  createEditToken,
-  createEditableSurvey,
-  loadDraft,
+  createBlankSurvey,
   loadSummaries,
+  removeDraft,
   saveDraft,
   saveSummaries,
   sha256,
   slugify,
   surveyFromRows,
   updateQuestionForKind,
+  type ChapterRow,
   type EditableSurvey,
   type QuestionRow,
   type SavedSurveySummary,
   type SurveyRow,
 } from "@/lib/survey-persistence";
-import type { AnalysisFinding, QuestionKind, SurveyQuestion } from "@/lib/types";
+import type { QuestionKind, SurveyChapter, SurveyQuestion } from "@/lib/types";
 import {
-  BarChart3,
-  Check,
   ChevronRight,
+  ClipboardList,
   Copy,
   ExternalLink,
-  FileText,
-  Link2,
+  FilePlus2,
+  Layers3,
   Loader2,
   Plus,
   Save,
-  Sigma,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 const questionKindOptions: Array<{ value: QuestionKind; label: string }> = [
-  { value: "likert", label: "5점 척도" },
   { value: "single_choice", label: "객관식" },
-  { value: "short_text", label: "단답형" },
+  { value: "likert", label: "척도형" },
+  { value: "matrix_likert", label: "그리드 척도" },
   { value: "long_text", label: "서술형" },
-  { value: "number", label: "숫자" },
+  { value: "number", label: "숫자형" },
 ];
 
 export default function Home() {
-  const findings = useMemo(() => buildDemoFindings(demoResponses), []);
-  const [survey, setSurvey] = useState<EditableSurvey>(() => createEditableSurvey(demoSurvey));
+  const [survey, setSurvey] = useState<EditableSurvey>(() => createBlankSurvey());
   const [savedSurveys, setSavedSurveys] = useState<SavedSurveySummary[]>([]);
-  const [selectedFinding, setSelectedFinding] = useState(0);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [saveMessage, setSaveMessage] = useState("저장 준비 완료");
-
-  const responseUrl = `/respond/${survey.slug}`;
-  const currentFinding = findings[selectedFinding];
+  const [saveMessage, setSaveMessage] = useState("새 설문을 작성하고 저장해 주세요.");
 
   useEffect(() => {
     let cancelled = false;
@@ -67,12 +61,54 @@ export default function Home() {
     };
   }, []);
 
-  function updateSurveyTitle(title: string) {
+  const responseUrl = `/respond/${survey.slug}`;
+  const linkEnabled = survey.published;
+
+  function editSurvey(patch: Partial<EditableSurvey>) {
+    setSurvey((current) => ({ ...current, ...patch }));
+    setSaveState("idle");
+  }
+
+  function updateTitle(title: string) {
     setSurvey((current) => ({
       ...current,
       title,
-      slug: slugify(title, current.id),
+      slug: current.published ? current.slug : slugify(title, current.id),
     }));
+    setSaveState("idle");
+  }
+
+  function updateChapter(id: string, patch: Partial<SurveyChapter>) {
+    setSurvey((current) => ({
+      ...current,
+      chapters: current.chapters.map((chapter) =>
+        chapter.id === id ? { ...chapter, ...patch } : chapter,
+      ),
+    }));
+    setSaveState("idle");
+  }
+
+  function addChapter() {
+    setSurvey((current) => {
+      const chapter = createBlankChapter(current.chapters.length + 1);
+      return {
+        ...current,
+        chapters: [...current.chapters, chapter],
+        questions: [...current.questions, createBlankQuestion(chapter.id)],
+      };
+    });
+    setSaveState("idle");
+  }
+
+  function removeChapter(id: string) {
+    setSurvey((current) => {
+      if (current.chapters.length === 1) return current;
+      return {
+        ...current,
+        chapters: current.chapters.filter((chapter) => chapter.id !== id),
+        questions: current.questions.filter((question) => question.chapterId !== id),
+      };
+    });
     setSaveState("idle");
   }
 
@@ -96,212 +132,257 @@ export default function Home() {
     setSaveState("idle");
   }
 
-  function addQuestion() {
+  function addQuestion(chapterId: string) {
     setSurvey((current) => ({
       ...current,
-      questions: [...current.questions, createBlankQuestion(current.questions.length + 1)],
+      questions: [...current.questions, createBlankQuestion(chapterId)],
     }));
     setSaveState("idle");
   }
 
   function removeQuestion(id: string) {
-    setSurvey((current) => ({
-      ...current,
-      questions:
-        current.questions.length === 1
-          ? current.questions
-          : current.questions.filter((question) => question.id !== id),
-    }));
+    setSurvey((current) => {
+      const question = current.questions.find((item) => item.id === id);
+      if (!question) return current;
+      const inChapter = current.questions.filter((item) => item.chapterId === question.chapterId);
+      return inChapter.length === 1
+        ? current
+        : { ...current, questions: current.questions.filter((item) => item.id !== id) };
+    });
     setSaveState("idle");
   }
 
   function createNewSurvey() {
-    const id = crypto.randomUUID();
-    const title = "새 설문지";
-    setSurvey({
-      id,
-      title,
-      description: "",
-      slug: slugify(title, id),
-      editToken: createEditToken(),
-      questions: [createBlankQuestion(1)],
-    });
+    setSurvey(createBlankSurvey());
     setSaveState("idle");
-    setSaveMessage("새 설문지를 작성 중입니다");
+    setSaveMessage("새 설문을 작성하고 저장해 주세요.");
   }
 
   async function loadSavedSurvey(summary: SavedSurveySummary) {
-    const localDraft = loadDraft(summary.id);
-    if (localDraft) {
-      setSurvey(localDraft);
-      setSaveState("saved");
-      setSaveMessage("저장된 설문지를 불러왔습니다");
-    }
-
     const supabase = getSupabaseBrowserClient(summary.editToken);
-    if (!supabase) return;
-
-    const { data: rawSurveyRow } = await supabase
-      .from("surveys")
-      .select("id,title,description,slug")
-      .eq("id", summary.id)
-      .single();
-
-    const { data: rawQuestionRows } = await supabase
-      .from("questions")
-      .select("id,position,prompt,kind,required,options,scale,analysis_role")
-      .eq("survey_id", summary.id)
-      .order("position", { ascending: true });
-
-    const surveyRow = rawSurveyRow as SurveyRow | null;
-    const questionRows = rawQuestionRows as QuestionRow[] | null;
-    if (surveyRow && questionRows) {
-      const loaded = surveyFromRows(surveyRow, questionRows, summary.editToken);
-      setSurvey(loaded);
-      saveDraft(loaded);
+    if (!supabase) {
+      setSaveState("error");
+      setSaveMessage("Supabase 연결 정보를 확인해 주세요.");
+      return;
     }
+
+    const [
+      { data: rawSurveyRow, error: surveyError },
+      { data: rawChapterRows },
+      { data: rawQuestionRows },
+    ] = await Promise.all([
+      supabase
+        .from("surveys")
+        .select("id,title,description,slug,settings")
+        .eq("id", summary.id)
+        .single(),
+      supabase
+        .from("chapters")
+        .select("id,position,title,description")
+        .eq("survey_id", summary.id)
+        .order("position", { ascending: true }),
+      supabase
+        .from("questions")
+        .select("id,chapter_id,position,prompt,kind,required,options,scale,analysis_role")
+        .eq("survey_id", summary.id)
+        .order("position", { ascending: true }),
+    ]);
+
+    if (surveyError || !rawSurveyRow) {
+      setSaveState("error");
+      setSaveMessage("저장된 설문을 불러오지 못했습니다.");
+      return;
+    }
+
+    const loaded = surveyFromRows(
+      rawSurveyRow as SurveyRow,
+      (rawChapterRows ?? []) as ChapterRow[],
+      (rawQuestionRows ?? []) as QuestionRow[],
+      summary.editToken,
+    );
+    setSurvey(loaded);
+    saveDraft(loaded);
+    setSaveState("saved");
+    setSaveMessage("저장된 설문을 불러왔습니다.");
   }
 
   async function saveSurvey() {
+    const supabase = getSupabaseBrowserClient(survey.editToken);
+    if (!supabase) {
+      setSaveState("error");
+      setSaveMessage("Supabase 연결 정보가 없어 저장할 수 없습니다.");
+      return;
+    }
+
     setSaveState("saving");
-    setSaveMessage("저장 중입니다");
+    setSaveMessage("설문을 저장하는 중입니다.");
 
     const normalized: EditableSurvey = {
       ...survey,
-      title: survey.title.trim() || "제목 없는 설문지",
-      description: survey.description.trim(),
-      slug: survey.slug || slugify(survey.title, survey.id),
-      editToken: survey.editToken || createEditToken(),
+      title: survey.title.trim() || "제목 없는 설문",
+      introduction: survey.introduction.trim(),
+      slug: survey.published ? survey.slug : slugify(survey.title, survey.id),
+      chapters: survey.chapters.map((chapter, index) => ({
+        ...chapter,
+        title: chapter.title.trim() || `${index + 1}장`,
+        description: chapter.description?.trim() ?? "",
+      })),
       questions: survey.questions.map((question, index) => ({
         ...question,
-        id: question.id || `q_${index + 1}`,
         prompt: question.prompt.trim() || `질문 ${index + 1}`,
       })),
     };
-    const supabase = getSupabaseBrowserClient(normalized.editToken);
 
     try {
-      if (supabase) {
-        const editTokenHash = await sha256(normalized.editToken);
-        const { error: surveyError } = await supabase.from("surveys").upsert(
-          {
-            id: normalized.id,
-            owner_id: null,
-            title: normalized.title,
-            purpose: "satisfaction",
-            description: normalized.description,
-            slug: normalized.slug,
-            status: "published",
-            is_anonymous: true,
-            settings: { editor: "simple", updatedAt: new Date().toISOString() },
-            edit_token_hash: editTokenHash,
-            published_at: new Date().toISOString(),
+      const editTokenHash = await sha256(normalized.editToken);
+      const { error: surveyError } = await supabase.from("surveys").upsert(
+        {
+          id: normalized.id,
+          owner_id: null,
+          title: normalized.title,
+          purpose: "satisfaction",
+          description: normalized.introduction,
+          slug: normalized.slug,
+          status: "draft",
+          is_anonymous: true,
+          settings: {
+            editor: "chapters",
+            privacyConsentRequired: normalized.privacyConsentRequired,
+            privacyText: normalized.privacyText.trim(),
+            updatedAt: new Date().toISOString(),
           },
-          { onConflict: "id" },
-        );
+          edit_token_hash: editTokenHash,
+          published_at: null,
+        },
+        { onConflict: "id" },
+      );
+      if (surveyError) throw surveyError;
 
-        if (surveyError) throw surveyError;
+      const { error: deleteQuestionsError } = await supabase
+        .from("questions")
+        .delete()
+        .eq("survey_id", normalized.id);
+      if (deleteQuestionsError) throw deleteQuestionsError;
 
-        const { error: deleteError } = await supabase
-          .from("questions")
-          .delete()
-          .eq("survey_id", normalized.id);
+      const { error: deleteChaptersError } = await supabase
+        .from("chapters")
+        .delete()
+        .eq("survey_id", normalized.id);
+      if (deleteChaptersError) throw deleteChaptersError;
 
-        if (deleteError) throw deleteError;
+      const { error: chaptersError } = await supabase.from("chapters").insert(
+        normalized.chapters.map((chapter, index) => ({
+          survey_id: normalized.id,
+          id: chapter.id,
+          position: index + 1,
+          title: chapter.title,
+          description: chapter.description ?? "",
+        })),
+      );
+      if (chaptersError) throw chaptersError;
 
-        const { error: questionError } = await supabase.from("questions").insert(
-          normalized.questions.map((question, index) => ({
-            survey_id: normalized.id,
-            id: question.id,
-            position: index + 1,
-            prompt: question.prompt,
-            kind: question.kind,
-            required: question.required,
-            options: question.options ?? [],
-            scale: question.scale ?? null,
-            analysis_role: question.analysisRole ?? null,
-          })),
-        );
+      const { error: questionsError } = await supabase.from("questions").insert(
+        normalized.questions.map((question, index) => ({
+          survey_id: normalized.id,
+          id: question.id,
+          chapter_id: question.chapterId ?? normalized.chapters[0]?.id,
+          position: index + 1,
+          prompt: question.prompt,
+          kind: question.kind,
+          required: question.required,
+          options: question.options ?? [],
+          scale: question.scale ?? null,
+          analysis_role: question.analysisRole ?? null,
+        })),
+      );
+      if (questionsError) throw questionsError;
 
-        if (questionError) throw questionError;
-      }
+      const { error: publishError } = await supabase
+        .from("surveys")
+        .update({ status: "published", published_at: new Date().toISOString() })
+        .eq("id", normalized.id);
+      if (publishError) throw publishError;
 
-      saveDraft(normalized);
+      const published = { ...normalized, published: true };
       const summary: SavedSurveySummary = {
-        id: normalized.id,
-        title: normalized.title,
-        slug: normalized.slug,
-        editToken: normalized.editToken,
+        id: published.id,
+        title: published.title,
+        slug: published.slug,
+        editToken: published.editToken,
         updatedAt: new Date().toISOString(),
-        questionCount: normalized.questions.length,
+        questionCount: published.questions.length,
       };
-      const nextSummaries = [
-        summary,
-        ...savedSurveys.filter((item) => item.id !== normalized.id),
-      ].slice(0, 12);
+      const nextSummaries = [summary, ...savedSurveys.filter((item) => item.id !== summary.id)].slice(
+        0,
+        20,
+      );
 
-      setSurvey(normalized);
+      setSurvey(published);
       setSavedSurveys(nextSummaries);
+      saveDraft(published);
       saveSummaries(nextSummaries);
       setSaveState("saved");
-      setSaveMessage("저장되었습니다");
+      setSaveMessage("저장되었습니다. 응답 링크를 사용할 수 있습니다.");
     } catch (error) {
       console.error(error);
-      saveDraft(normalized);
       setSaveState("error");
-      setSaveMessage("브라우저에는 저장됐지만 Supabase 저장을 확인하지 못했습니다");
+      const reason =
+        typeof error === "object" && error && "message" in error
+          ? String(error.message)
+          : "연결 상태와 데이터베이스 설정을 확인해 주세요.";
+      setSaveMessage(`저장하지 못했습니다. ${reason}`);
     }
   }
 
+  async function deleteSavedSurvey(summary: SavedSurveySummary) {
+    const supabase = getSupabaseBrowserClient(summary.editToken);
+    if (!supabase) return;
+
+    const { error } = await supabase.from("surveys").delete().eq("id", summary.id);
+    if (error) {
+      setSaveState("error");
+      setSaveMessage("설문을 삭제하지 못했습니다.");
+      return;
+    }
+
+    const nextSummaries = savedSurveys.filter((item) => item.id !== summary.id);
+    setSavedSurveys(nextSummaries);
+    saveSummaries(nextSummaries);
+    removeDraft(summary.id);
+    if (survey.id === summary.id) createNewSurvey();
+    setSaveMessage("설문을 삭제했습니다.");
+  }
+
   return (
-    <main className="min-h-dvh bg-[#f7f8fa] text-slate-950">
-      <div className="mx-auto grid min-h-dvh max-w-[1480px] gap-6 px-4 py-5 lg:grid-cols-[240px_1fr] lg:px-6">
-        <aside className="hidden rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] lg:block">
-          <div className="flex items-center gap-3">
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-950 text-white">
-              <Sigma className="size-5" aria-hidden />
-            </div>
-            <div>
-              <p className="text-base font-bold">School Stat Lab</p>
-              <p className="text-xs text-slate-500">설문과 통계 분석</p>
-            </div>
-          </div>
+    <main className="min-h-dvh bg-[#f5f7fa] text-slate-950">
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-[1360px] items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <Image
+            alt="온(ON)통계"
+            className="h-16 w-auto object-contain sm:h-[72px]"
+            height={352}
+            priority
+            src="/ontong-logo.png"
+            width={780}
+          />
+          <button
+            className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            onClick={createNewSurvey}
+            type="button"
+          >
+            <FilePlus2 className="size-4" aria-hidden />
+            새 설문
+          </button>
+        </div>
+      </header>
 
-          <nav className="mt-8 grid gap-2">
-            {[
-              ["설문 만들기", FileText],
-              ["응답 링크", Link2],
-              ["자동 분석", BarChart3],
-            ].map(([label, Icon]) => (
+      <div className="mx-auto grid max-w-[1360px] gap-6 px-4 py-6 lg:grid-cols-[minmax(0,820px)_360px] lg:px-6">
+        <section className="grid content-start gap-5">
+          <section className="rounded-lg border border-slate-200 bg-white p-5 sm:p-7">
+            <div className="mb-6 flex items-center justify-between gap-4">
+              <h1 className="text-xl font-bold">설문지 작성</h1>
               <button
-                className="flex h-11 items-center gap-3 rounded-2xl px-3 text-left text-sm font-bold text-slate-700 transition hover:bg-slate-50"
-                key={label as string}
-                type="button"
-              >
-                <Icon className="size-4 text-slate-400" aria-hidden />
-                {label as string}
-              </button>
-            ))}
-          </nav>
-        </aside>
-
-        <section className="grid content-start gap-6">
-          <header className="flex flex-col gap-4 rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs font-bold uppercase text-blue-600">Survey Builder</p>
-              <h1 className="mt-1 text-3xl font-black tracking-tight">설문지를 만들고 저장하세요</h1>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
-                onClick={createNewSurvey}
-                type="button"
-              >
-                <Plus className="size-4" aria-hidden />
-                새 설문
-              </button>
-              <button
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 disabled:bg-blue-300"
+                className="inline-flex h-11 items-center gap-2 rounded-lg bg-[#3182f6] px-5 text-sm font-semibold text-white transition hover:bg-[#1b64da] disabled:opacity-60"
                 disabled={saveState === "saving"}
                 onClick={saveSurvey}
                 type="button"
@@ -313,158 +394,243 @@ export default function Home() {
                 )}
                 저장
               </button>
-              <a
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800"
-                href={responseUrl}
-              >
-                <ExternalLink className="size-4" aria-hidden />
-                응답 화면
-              </a>
             </div>
-          </header>
 
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_420px]">
-            <section className="grid gap-6">
-              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] sm:p-7">
-                <div className="grid gap-5">
-                  <label className="grid gap-2">
-                    <span className="text-sm font-bold text-slate-500">설문 제목</span>
-                    <input
-                      className="h-14 rounded-3xl border border-transparent bg-slate-50 px-5 text-xl font-black outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
-                      value={survey.title}
-                      onChange={(event) => updateSurveyTitle(event.target.value)}
-                    />
-                  </label>
+            <div className="grid gap-5">
+              <Field label="설문 제목">
+                <input
+                  className="input text-lg font-semibold"
+                  onChange={(event) => updateTitle(event.target.value)}
+                  placeholder="설문 제목을 입력하세요"
+                  value={survey.title}
+                />
+              </Field>
+              <Field label="설문 소개">
+                <textarea
+                  className="input min-h-28 resize-y py-3"
+                  onChange={(event) => editSurvey({ introduction: event.target.value })}
+                  placeholder="학생에게 보여줄 설문 안내를 입력하세요"
+                  value={survey.introduction}
+                />
+              </Field>
+            </div>
+          </section>
 
-                  <label className="grid gap-2">
-                    <span className="text-sm font-bold text-slate-500">설명</span>
-                    <textarea
-                      className="min-h-24 rounded-3xl border border-transparent bg-slate-50 px-5 py-4 text-sm leading-6 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
-                      value={survey.description}
-                      onChange={(event) => {
-                        setSurvey((current) => ({ ...current, description: event.target.value }));
-                        setSaveState("idle");
-                      }}
-                    />
-                  </label>
-                </div>
+          <section className="rounded-lg border border-slate-200 bg-white p-5 sm:p-7">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="size-5 text-[#3182f6]" aria-hidden />
+                <h2 className="text-base font-bold">개인정보 동의</h2>
               </div>
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+                <input
+                  checked={survey.privacyConsentRequired}
+                  className="size-4 accent-[#3182f6]"
+                  onChange={(event) => editSurvey({ privacyConsentRequired: event.target.checked })}
+                  type="checkbox"
+                />
+                동의 필수
+              </label>
+            </div>
+            <textarea
+              className="input mt-4 min-h-24 resize-y py-3"
+              onChange={(event) => editSurvey({ privacyText: event.target.value })}
+              value={survey.privacyText}
+            />
+          </section>
 
-              <div className="grid gap-4">
-                {survey.questions.map((question, index) => (
-                  <QuestionEditor
-                    index={index}
-                    key={question.id}
-                    onChange={updateQuestion}
-                    onKindChange={changeQuestionKind}
-                    onRemove={removeQuestion}
-                    question={question}
-                  />
-                ))}
-              </div>
+          {survey.chapters.map((chapter, chapterIndex) => (
+            <ChapterEditor
+              chapter={chapter}
+              chapterIndex={chapterIndex}
+              key={chapter.id}
+              onAddQuestion={addQuestion}
+              onChapterChange={updateChapter}
+              onKindChange={changeQuestionKind}
+              onQuestionChange={updateQuestion}
+              onRemoveChapter={removeChapter}
+              onRemoveQuestion={removeQuestion}
+              questions={survey.questions.filter((question) => question.chapterId === chapter.id)}
+              removable={survey.chapters.length > 1}
+            />
+          ))}
 
+          <button
+            className="flex h-14 items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white text-sm font-semibold text-slate-700 transition hover:border-[#3182f6] hover:text-[#3182f6]"
+            onClick={addChapter}
+            type="button"
+          >
+            <Layers3 className="size-4" aria-hidden />
+            챕터 추가
+          </button>
+        </section>
+
+        <aside className="grid content-start gap-4">
+          <section className="rounded-lg border border-slate-200 bg-white p-5">
+            <h2 className="text-base font-bold">응답 링크</h2>
+            <p
+              className={`mt-2 text-sm font-medium ${
+                saveState === "error" ? "text-red-600" : "text-slate-500"
+              }`}
+            >
+              {saveMessage}
+            </p>
+            <div className="mt-4 flex items-center gap-2 rounded-lg bg-slate-50 p-2">
+              <code className="min-w-0 flex-1 truncate px-2 text-xs text-slate-600">
+                {linkEnabled ? responseUrl : "저장 후 링크가 생성됩니다"}
+              </code>
               <button
-                className="flex h-14 items-center justify-center gap-2 rounded-[24px] border border-dashed border-slate-300 bg-white text-sm font-bold text-slate-700 transition hover:border-blue-400 hover:text-blue-600"
-                onClick={addQuestion}
+                aria-label="응답 링크 복사"
+                className="flex size-10 items-center justify-center rounded-lg bg-white text-slate-600 disabled:text-slate-300"
+                disabled={!linkEnabled}
+                onClick={() =>
+                  navigator.clipboard?.writeText(`${window.location.origin}${responseUrl}`)
+                }
                 type="button"
               >
-                <Plus className="size-4" aria-hidden />
-                질문 추가
+                <Copy className="size-4" aria-hidden />
               </button>
-            </section>
+            </div>
+            {linkEnabled ? (
+              <a
+                className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800"
+                href={responseUrl}
+                target="_blank"
+              >
+                <ExternalLink className="size-4" aria-hidden />
+                응답 화면 열기
+              </a>
+            ) : null}
+          </section>
 
-            <aside className="grid content-start gap-5">
-              <div className="grid grid-cols-3 gap-3">
-                <Metric label="응답" value={`${demoResponses.length}명`} />
-                <Metric label="질문" value={`${survey.questions.length}개`} />
-                <Metric label="분석" value={`${findings.length}종`} />
-              </div>
-
-              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-lg font-black">저장된 설문</h2>
-                    <p className="mt-1 text-xs font-semibold text-slate-400">{saveMessage}</p>
-                  </div>
-                  {saveState === "saved" ? <Check className="size-5 text-blue-600" aria-hidden /> : null}
-                </div>
-
-                <div className="mt-4 grid gap-2">
-                  {savedSurveys.length === 0 ? (
-                    <div className="rounded-3xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">
-                      아직 저장된 설문이 없습니다.
-                    </div>
-                  ) : (
-                    savedSurveys.map((item) => (
-                      <button
-                        className="flex items-center justify-between gap-3 rounded-3xl bg-slate-50 p-4 text-left transition hover:bg-blue-50"
-                        key={item.id}
-                        onClick={() => loadSavedSurvey(item)}
-                        type="button"
-                      >
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-black">{item.title}</span>
-                          <span className="mt-1 block text-xs font-semibold text-slate-400">
-                            {item.questionCount}개 질문
-                          </span>
-                        </span>
-                        <ChevronRight className="size-4 shrink-0 text-slate-400" aria-hidden />
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
-                <h2 className="text-lg font-black">응답 링크</h2>
-                <div className="mt-4 flex items-center gap-2 rounded-3xl bg-slate-50 p-3">
-                  <code className="min-w-0 flex-1 truncate px-2 text-xs font-bold text-slate-600">
-                    {responseUrl}
-                  </code>
-                  <button
-                    className="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-500 shadow-sm transition hover:text-blue-600"
-                    onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${responseUrl}`)}
-                    title="링크 복사"
-                    type="button"
-                  >
-                    <Copy className="size-4" aria-hidden />
-                  </button>
-                </div>
-              </div>
-
-              <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
-                <h2 className="text-lg font-black">자동 분석</h2>
-                <div className="mt-4 grid gap-2">
-                  {findings.slice(0, 6).map((finding, index) => (
+          <section className="rounded-lg border border-slate-200 bg-white p-5">
+            <div className="flex items-center gap-2">
+              <ClipboardList className="size-5 text-[#3182f6]" aria-hidden />
+              <h2 className="text-base font-bold">저장된 설문</h2>
+            </div>
+            <div className="mt-4 grid gap-2">
+              {savedSurveys.length === 0 ? (
+                <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">
+                  저장된 설문이 없습니다.
+                </p>
+              ) : (
+                savedSurveys.map((item) => (
+                  <div className="flex items-center gap-2 rounded-lg bg-slate-50 p-2" key={item.id}>
                     <button
-                      className={`rounded-3xl p-4 text-left transition ${
-                        selectedFinding === index
-                          ? "bg-slate-950 text-white"
-                          : "bg-slate-50 text-slate-950 hover:bg-blue-50"
-                      }`}
-                      key={finding.method}
-                      onClick={() => setSelectedFinding(index)}
+                      className="min-w-0 flex-1 p-2 text-left"
+                      onClick={() => loadSavedSurvey(item)}
                       type="button"
                     >
-                      <span className="block text-sm font-black">{finding.title}</span>
-                      <span
-                        className={`mt-1 block text-xs font-semibold ${
-                          selectedFinding === index ? "text-slate-300" : "text-slate-400"
-                        }`}
-                      >
-                        {finding.method}
+                      <span className="block truncate text-sm font-semibold">{item.title}</span>
+                      <span className="mt-1 block text-xs text-slate-500">
+                        문항 {item.questionCount}개
                       </span>
                     </button>
-                  ))}
-                </div>
-              </div>
-
-              <FindingCard finding={currentFinding} />
-            </aside>
-          </div>
-        </section>
+                    <ChevronRight className="size-4 shrink-0 text-slate-400" aria-hidden />
+                    <button
+                      aria-label={`${item.title} 삭제`}
+                      className="flex size-9 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white hover:text-red-500"
+                      onClick={() => deleteSavedSurvey(item)}
+                      type="button"
+                    >
+                      <Trash2 className="size-4" aria-hidden />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </aside>
       </div>
     </main>
+  );
+}
+
+function Field({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <label className="grid gap-2">
+      <span className="text-sm font-semibold text-slate-700">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function ChapterEditor({
+  chapter,
+  chapterIndex,
+  onAddQuestion,
+  onChapterChange,
+  onKindChange,
+  onQuestionChange,
+  onRemoveChapter,
+  onRemoveQuestion,
+  questions,
+  removable,
+}: {
+  chapter: SurveyChapter;
+  chapterIndex: number;
+  onAddQuestion: (chapterId: string) => void;
+  onChapterChange: (id: string, patch: Partial<SurveyChapter>) => void;
+  onKindChange: (id: string, kind: QuestionKind) => void;
+  onQuestionChange: (id: string, patch: Partial<SurveyQuestion>) => void;
+  onRemoveChapter: (id: string) => void;
+  onRemoveQuestion: (id: string) => void;
+  questions: SurveyQuestion[];
+  removable: boolean;
+}) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white">
+      <header className="flex items-start gap-3 border-b border-slate-100 p-5 sm:p-6">
+        <span className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-bold text-[#3182f6]">
+          {chapterIndex + 1}
+        </span>
+        <div className="grid min-w-0 flex-1 gap-2">
+          <input
+            className="border-0 bg-transparent text-base font-bold outline-none"
+            onChange={(event) => onChapterChange(chapter.id, { title: event.target.value })}
+            placeholder="챕터 제목"
+            value={chapter.title}
+          />
+          <input
+            className="border-0 bg-transparent text-sm text-slate-500 outline-none"
+            onChange={(event) => onChapterChange(chapter.id, { description: event.target.value })}
+            placeholder="챕터 안내 (선택)"
+            value={chapter.description ?? ""}
+          />
+        </div>
+        <button
+          aria-label="챕터 삭제"
+          className="flex size-9 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-500 disabled:hidden"
+          disabled={!removable}
+          onClick={() => onRemoveChapter(chapter.id)}
+          type="button"
+        >
+          <Trash2 className="size-4" aria-hidden />
+        </button>
+      </header>
+
+      <div className="divide-y divide-slate-100">
+        {questions.map((question, index) => (
+          <QuestionEditor
+            index={index}
+            key={question.id}
+            onChange={onQuestionChange}
+            onKindChange={onKindChange}
+            onRemove={onRemoveQuestion}
+            question={question}
+          />
+        ))}
+      </div>
+
+      <button
+        className="m-4 inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-slate-700 transition hover:border-[#3182f6] hover:text-[#3182f6] sm:m-5"
+        onClick={() => onAddQuestion(chapter.id)}
+        type="button"
+      >
+        <Plus className="size-4" aria-hidden />
+        질문 추가
+      </button>
+    </section>
   );
 }
 
@@ -481,95 +647,100 @@ function QuestionEditor({
   onRemove: (id: string) => void;
   question: SurveyQuestion;
 }) {
+  const hasScale = question.kind === "likert" || question.kind === "matrix_likert";
+
   return (
-    <section className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)] sm:p-6">
-      <div className="flex items-start justify-between gap-4">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-sm font-black text-blue-600">
-          {index + 1}
-        </span>
+    <article className="p-5 sm:p-6">
+      <div className="flex items-start gap-3">
+        <span className="mt-3 text-sm font-semibold text-slate-400">{index + 1}.</span>
+        <div className="grid min-w-0 flex-1 gap-4">
+          <input
+            className="input"
+            onChange={(event) => onChange(question.id, { prompt: event.target.value })}
+            placeholder="질문을 입력하세요"
+            value={question.prompt}
+          />
+          <div className="flex flex-wrap gap-3">
+            <select
+              aria-label="질문 형식"
+              className="input h-11 w-40"
+              onChange={(event) => onKindChange(question.id, event.target.value as QuestionKind)}
+              value={question.kind}
+            >
+              {questionKindOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <label className="flex h-11 items-center gap-2 rounded-lg bg-slate-50 px-3 text-sm font-medium text-slate-600">
+              <input
+                checked={question.required}
+                className="accent-[#3182f6]"
+                onChange={(event) => onChange(question.id, { required: event.target.checked })}
+                type="checkbox"
+              />
+              필수 응답
+            </label>
+          </div>
+          {question.kind === "single_choice" || question.kind === "matrix_likert" ? (
+            <Field
+              label={
+                question.kind === "matrix_likert"
+                  ? "행 문항 (한 줄에 하나)"
+                  : "선택지 (한 줄에 하나)"
+              }
+            >
+              <textarea
+                className="input min-h-24 resize-y py-3"
+                onChange={(event) =>
+                  onChange(question.id, {
+                    options: event.target.value
+                      .split("\n")
+                      .map((option) => option.trim())
+                      .filter(Boolean),
+                  })
+                }
+                value={(question.options ?? []).join("\n")}
+              />
+            </Field>
+          ) : null}
+          {hasScale && question.scale ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={`${question.scale.min}점 의미`}>
+                <input
+                  className="input h-11"
+                  onChange={(event) =>
+                    onChange(question.id, {
+                      scale: { ...question.scale!, minLabel: event.target.value },
+                    })
+                  }
+                  value={question.scale.minLabel}
+                />
+              </Field>
+              <Field label={`${question.scale.max}점 의미`}>
+                <input
+                  className="input h-11"
+                  onChange={(event) =>
+                    onChange(question.id, {
+                      scale: { ...question.scale!, maxLabel: event.target.value },
+                    })
+                  }
+                  value={question.scale.maxLabel}
+                />
+              </Field>
+            </div>
+          ) : null}
+        </div>
         <button
-          className="flex size-9 items-center justify-center rounded-2xl text-slate-400 transition hover:bg-red-50 hover:text-red-500"
+          aria-label="질문 삭제"
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-500"
           onClick={() => onRemove(question.id)}
-          title="질문 삭제"
           type="button"
         >
           <Trash2 className="size-4" aria-hidden />
         </button>
       </div>
-
-      <div className="mt-4 grid gap-4">
-        <input
-          className="h-13 rounded-3xl border border-transparent bg-slate-50 px-5 text-base font-bold outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
-          value={question.prompt}
-          onChange={(event) => onChange(question.id, { prompt: event.target.value })}
-        />
-
-        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-          <select
-            className="h-12 rounded-3xl border border-transparent bg-slate-50 px-4 text-sm font-bold outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
-            value={question.kind}
-            onChange={(event) => onKindChange(question.id, event.target.value as QuestionKind)}
-          >
-            {questionKindOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-
-          <label className="flex h-12 items-center gap-2 rounded-3xl bg-slate-50 px-4 text-sm font-bold text-slate-600">
-            <input
-              checked={question.required}
-              onChange={(event) => onChange(question.id, { required: event.target.checked })}
-              type="checkbox"
-            />
-            필수
-          </label>
-        </div>
-
-        {question.kind === "single_choice" ? (
-          <textarea
-            className="min-h-24 rounded-3xl border border-transparent bg-slate-50 px-5 py-4 text-sm leading-6 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
-            value={(question.options ?? []).join("\n")}
-            onChange={(event) =>
-              onChange(question.id, {
-                options: event.target.value
-                  .split("\n")
-                  .map((option) => option.trim())
-                  .filter(Boolean),
-              })
-            }
-          />
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[24px] bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
-      <p className="text-xs font-bold text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-black">{value}</p>
-    </div>
-  );
-}
-
-function FindingCard({ finding }: { finding: AnalysisFinding }) {
-  return (
-    <div className="rounded-[28px] bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
-      <h2 className="text-lg font-black">{finding.title}</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-500">{finding.summary}</p>
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        {Object.entries(finding.stats)
-          .slice(0, 6)
-          .map(([label, value]) => (
-            <div className="rounded-2xl bg-slate-50 p-3" key={label}>
-              <p className="text-[11px] font-bold text-slate-400">{label}</p>
-              <p className="mt-1 text-sm font-black">{value}</p>
-            </div>
-          ))}
-      </div>
-    </div>
+    </article>
   );
 }

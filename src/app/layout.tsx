@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "School Stat Lab",
-  description: "교사용 설문 제작 및 통계 분석 도구",
+  title: "온(ON)통계",
+  description: "학교 설문 제작과 통계 분석을 한곳에서 진행하는 교사용 도구",
 };
 
 export default function RootLayout({

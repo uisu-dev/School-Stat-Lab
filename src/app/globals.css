@@ -20,6 +20,26 @@ body {
 
 button,
 a,
-input {
+input,
+select,
+textarea {
   -webkit-tap-highlight-color: transparent;
+}
+
+.input {
+  min-height: 3rem;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  background: #f8fafc;
+  padding: 0 1rem;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+.input:focus {
+  border-color: #3182f6;
+  background: white;
+  box-shadow: 0 0 0 3px rgb(49 130 246 / 0.14);
 }

@@ -1,4 +1,4 @@
-import type { QuestionKind, SurveyQuestion, SurveyTemplate } from "@/lib/types";
+import type { QuestionKind, SurveyChapter, SurveyQuestion } from "@/lib/types";
 
 export type SavedSurveySummary = {
   id: string;
@@ -12,10 +12,14 @@ export type SavedSurveySummary = {
 export type EditableSurvey = {
   id: string;
   title: string;
-  description: string;
+  introduction: string;
   slug: string;
   editToken: string;
+  privacyConsentRequired: boolean;
+  privacyText: string;
+  chapters: SurveyChapter[];
   questions: SurveyQuestion[];
+  published: boolean;
 };
 
 export type SurveyRow = {
@@ -23,10 +27,22 @@ export type SurveyRow = {
   title: string;
   description: string | null;
   slug: string;
+  settings: {
+    privacyConsentRequired?: boolean;
+    privacyText?: string;
+  } | null;
+};
+
+export type ChapterRow = {
+  id: string;
+  position: number;
+  title: string;
+  description: string | null;
 };
 
 export type QuestionRow = {
   id: string;
+  chapter_id: string | null;
   position: number;
   prompt: string;
   kind: QuestionKind;
@@ -36,38 +52,58 @@ export type QuestionRow = {
   analysis_role: SurveyQuestion["analysisRole"] | null;
 };
 
-export const savedSurveyStorageKey = "school-stat-lab:saved-surveys";
-export const draftSurveyStoragePrefix = "school-stat-lab:draft:";
+export const savedSurveyStorageKey = "ontong-stat:saved-surveys:v1";
+export const draftSurveyStoragePrefix = "ontong-stat:draft:v1:";
 
-export function createEditableSurvey(template: SurveyTemplate): EditableSurvey {
+const defaultPrivacyText =
+  "설문 응답은 교육 활동 개선과 통계 분석 학습 목적으로만 활용되며, 개인정보는 필요한 범위에서 안전하게 처리됩니다.";
+
+function createId(prefix: string) {
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`;
+}
+
+export function createBlankChapter(position = 1): SurveyChapter {
+  return {
+    id: createId("chapter"),
+    title: `${position}장`,
+    description: "",
+  };
+}
+
+export function createBlankQuestion(chapterId: string): SurveyQuestion {
+  return {
+    id: createId("q"),
+    chapterId,
+    prompt: "",
+    kind: "single_choice",
+    required: true,
+    options: ["선택지 1", "선택지 2"],
+    analysisRole: "category",
+  };
+}
+
+export function createBlankSurvey(): EditableSurvey {
   const id = crypto.randomUUID();
+  const chapter = createBlankChapter();
+
   return {
     id,
-    title: template.title,
-    description: template.description,
-    slug: slugify(template.title, id),
+    title: "",
+    introduction: "",
+    slug: slugify("survey", id),
     editToken: createEditToken(),
-    questions: template.questions.map((question) => ({ ...question })),
+    privacyConsentRequired: true,
+    privacyText: defaultPrivacyText,
+    chapters: [chapter],
+    questions: [createBlankQuestion(chapter.id)],
+    published: false,
   };
 }
 
-export function createBlankQuestion(position: number): SurveyQuestion {
-  return {
-    id: `q_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`,
-    prompt: "새 질문",
-    kind: "likert",
-    required: true,
-    scale: {
-      min: 1,
-      max: 5,
-      minLabel: "전혀 아니다",
-      maxLabel: "매우 그렇다",
-    },
-    analysisRole: position === 1 ? "outcome" : "note",
-  };
-}
-
-export function updateQuestionForKind(question: SurveyQuestion, kind: QuestionKind): SurveyQuestion {
+export function updateQuestionForKind(
+  question: SurveyQuestion,
+  kind: QuestionKind,
+): SurveyQuestion {
   if (kind === "single_choice") {
     return {
       ...question,
@@ -86,10 +122,25 @@ export function updateQuestionForKind(question: SurveyQuestion, kind: QuestionKi
       scale: question.scale ?? {
         min: 1,
         max: 5,
-        minLabel: "전혀 아니다",
+        minLabel: "전혀 그렇지 않다",
         maxLabel: "매우 그렇다",
       },
       analysisRole: "outcome",
+    };
+  }
+
+  if (kind === "matrix_likert") {
+    return {
+      ...question,
+      kind,
+      options: question.options?.length ? question.options : ["문항 1", "문항 2"],
+      scale: question.scale ?? {
+        min: 1,
+        max: 5,
+        minLabel: "전혀 그렇지 않다",
+        maxLabel: "매우 그렇다",
+      },
+      analysisRole: "scale_item",
     };
   }
 
@@ -111,7 +162,7 @@ export async function sha256(value: string) {
 }
 
 export function createEditToken() {
-  return `sst_${crypto.randomUUID()}_${crypto.randomUUID()}`;
+  return `ontong_${crypto.randomUUID()}_${crypto.randomUUID()}`;
 }
 
 export function slugify(title: string, id: string) {
@@ -155,21 +206,36 @@ export function loadDraft(id: string): EditableSurvey | null {
   }
 }
 
+export function removeDraft(id: string) {
+  window.localStorage.removeItem(`${draftSurveyStoragePrefix}${id}`);
+}
+
 export function surveyFromRows(
   surveyRow: SurveyRow,
+  chapterRows: ChapterRow[],
   questionRows: QuestionRow[],
   editToken: string,
 ): EditableSurvey {
   return {
     id: surveyRow.id,
     title: surveyRow.title,
-    description: surveyRow.description ?? "",
+    introduction: surveyRow.description ?? "",
     slug: surveyRow.slug,
     editToken,
+    privacyConsentRequired: surveyRow.settings?.privacyConsentRequired ?? true,
+    privacyText: surveyRow.settings?.privacyText ?? defaultPrivacyText,
+    chapters: chapterRows
+      .toSorted((a, b) => a.position - b.position)
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        description: row.description ?? "",
+      })),
     questions: questionRows
       .toSorted((a, b) => a.position - b.position)
       .map((row) => ({
         id: row.id,
+        chapterId: row.chapter_id ?? undefined,
         prompt: row.prompt,
         kind: row.kind,
         required: row.required,
@@ -177,5 +243,6 @@ export function surveyFromRows(
         scale: row.scale ?? undefined,
         analysisRole: row.analysis_role ?? undefined,
       })),
+    published: true,
   };
 }

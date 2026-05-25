@@ -26,8 +26,15 @@ export type AnalysisRole =
   | "category"
   | "note";
 
+export type SurveyChapter = {
+  id: string;
+  title: string;
+  description?: string;
+};
+
 export type SurveyQuestion = {
   id: string;
+  chapterId?: string;
   prompt: string;
   kind: QuestionKind;
   required: boolean;
@@ -46,10 +53,19 @@ export type SurveyTemplate = {
   title: string;
   purpose: SurveyPurpose;
   description: string;
+  privacyConsentRequired?: boolean;
+  privacyText?: string;
+  chapters?: SurveyChapter[];
   questions: SurveyQuestion[];
 };
 
-export type SurveyAnswerValue = string | number | string[] | null;
+export type SurveyAnswerValue =
+  | string
+  | number
+  | boolean
+  | string[]
+  | Record<string, number | null>
+  | null;
 
 export type SurveyResponse = {
   id: string;
